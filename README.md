@@ -97,6 +97,8 @@ echo "console.log('Hello World')" | java -cp . Main
 | 4  | Array Reverse        | Original: 1, 2, 3, 4, 5                 | ✅     |
 |    |                      | Reversed: 5, 4, 3, 2, 1                  |        |
 | 5  | String Palindrome    | racecar is a Palindrome                  | ✅     |
+| 6  | testx.js             | `output displays`                        | ✅     |
+| 7  | testmajor.js         | `output displays`                        | ✅     |
 
 
 ---
@@ -171,5 +173,4 @@ Maps all JS built-in functions to Java equivalents.
 Java JDK 23
 No external libraries
 No JavaScript engine used
-Built entirely from scratch
 ```
