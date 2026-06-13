@@ -446,13 +446,13 @@ console.log(Boolean("hi")); // true
 // ══════════════════════════════════════
 // 29. instanceof - WILL FAIL
 // ══════════════════════════════════════
-// function Animal(name) { this.name = name; }
-// let dog = new Animal("Rex");
-// console.log(dog instanceof Animal); // should be true — throws Unknown operator
+function Animal(name) { this.name = name; }
+let dog = new Animal("Rex");
+console.log(dog instanceof Animal); // should be true — throws Unknown operator
 
 // ══════════════════════════════════════
 // 30. Shorthand object props - WILL FAIL
 // ══════════════════════════════════════
-// let myX = 5, myY = 10;
-// let point = { myX, myY }; // Parser expects colon — throws
-// console.log(point.myX); // 5
+let myX = 5, myY = 10;
+let point = { myX, myY }; // Parser expects colon — throws
+console.log(point.myX); // 5
