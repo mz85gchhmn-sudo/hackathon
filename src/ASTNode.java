@@ -51,6 +51,15 @@ public abstract class ASTNode {
     }
 
 
+    // ── let a = 1, b = 2, c;  (multiple declarations in one statement) ─
+    public static class VarDeclarationList extends ASTNode {
+        public final List<VarDeclaration> declarations;
+        public VarDeclarationList(List<VarDeclaration> declarations) {
+            this.declarations = declarations;
+        }
+    }
+
+
     // ── if (condition) { ... } else { ... } ──────────────────
     public static class IfStatement extends ASTNode {
         public final ASTNode condition;
@@ -145,6 +154,10 @@ public abstract class ASTNode {
 
     // ── break; ───────────────────────────────────────────────
     public static class BreakStatement extends ASTNode {}
+
+
+    // ── continue; ────────────────────────────────────────────
+    public static class ContinueStatement extends ASTNode {}
 
 
     // ── A bare expression used as a statement  e.g. foo(); ───

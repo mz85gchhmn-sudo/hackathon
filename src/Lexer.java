@@ -177,6 +177,7 @@ public class Lexer {
             case "switch"     -> Token.Type.SWITCH;
             case "case"       -> Token.Type.CASE;
             case "break"      -> Token.Type.BREAK;
+            case "continue"   -> Token.Type.CONTINUE;
             case "default"    -> Token.Type.DEFAULT;
             case "try"        -> Token.Type.TRY;
             case "catch"      -> Token.Type.CATCH;
@@ -220,7 +221,10 @@ public class Lexer {
                 else                     { tokens.add(new Token(Token.Type.STAR,           "*")); pos++; }
             }
 
-            case '/' -> { tokens.add(new Token(Token.Type.SLASH,   "/")); pos++; }
+            case '/' -> {
+                if (peek(1) == '=') { tokens.add(new Token(Token.Type.SLASH_ASSIGN, "/=")); pos += 2; }
+                else                { tokens.add(new Token(Token.Type.SLASH,          "/")); pos++; }
+            }
             case '%' -> { tokens.add(new Token(Token.Type.PERCENT, "%")); pos++; }
 
             case '=' -> {
@@ -264,7 +268,8 @@ public class Lexer {
             case ',' -> { tokens.add(new Token(Token.Type.COMMA,     ",")); pos++; }
             case ':' -> { tokens.add(new Token(Token.Type.COLON,     ":")); pos++; }
             case '?' -> {
-                if (peek(1) == '.') { tokens.add(new Token(Token.Type.QUESTION_DOT, "?.")); pos += 2; }
+                if (peek(1) == '?' ) { tokens.add(new Token(Token.Type.NULLISH,      "??")); pos += 2; }
+                else if (peek(1) == '.') { tokens.add(new Token(Token.Type.QUESTION_DOT, "?.")); pos += 2; }
                 else                { tokens.add(new Token(Token.Type.QUESTION,        "?")); pos++; }
             }
 
