@@ -21,7 +21,7 @@ public class Token {
         IF, ELSE,
         FOR, WHILE, DO,
         FUNCTION, RETURN,
-        SWITCH, CASE, BREAK, DEFAULT,
+        SWITCH, CASE, BREAK, CONTINUE, DEFAULT,
         TRY, CATCH, FINALLY, THROW,
         TEMPLATE,
         NEW, TYPEOF, INSTANCEOF,
@@ -52,7 +52,7 @@ public class Token {
         LBRACE, RBRACE,
         LBRACKET, RBRACKET,
         SEMICOLON, COMMA, DOT,
-        COLON, QUESTION, QUESTION_DOT,
+        COLON, QUESTION, QUESTION_DOT, NULLISH,  // ?? operator
         SPREAD,         // ...
 
         // Arrow for arrow functions

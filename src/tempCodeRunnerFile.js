@@ -1,0 +1,1 @@
+console.log("b" > "a"); // should be true, returns false
