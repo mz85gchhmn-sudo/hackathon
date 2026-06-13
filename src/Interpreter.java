@@ -22,6 +22,12 @@ public class Interpreter {
     }
 
 
+    // ── Thrown internally to handle continue statements ───────
+    private static class ContinueException extends RuntimeException {
+        ContinueException() { super(null, null, true, false); }
+    }
+
+
     // ── Thrown internally for JS `throw` statements ───────────
     private static class ThrowException extends RuntimeException {
         final Object value;
@@ -127,6 +133,10 @@ public class Interpreter {
             dateObj.put("toLocaleDateString", (JSBuiltin) x -> now.toString());
             return dateObj;
         });
+
+        // BONUS: Node.js compatibility shims (process.stdout, etc.)
+        // See NodeCompat.java
+        NodeCompat.install(globalEnv);
     }
 
 
@@ -183,6 +193,14 @@ public class Interpreter {
             return UNDEFINED;
         }
 
+        // ── let a = 1, b = 2, c;  (multiple declarations) ─────
+        if (node instanceof ASTNode.VarDeclarationList n) {
+            for (ASTNode.VarDeclaration decl : n.declarations) {
+                eval(decl, env);
+            }
+            return UNDEFINED;
+        }
+
         // ── { statements } ────────────────────────────────────
         if (node instanceof ASTNode.Block n) {
             Environment blockEnv = new Environment(env);
@@ -213,17 +231,23 @@ public class Interpreter {
 
         // ── while loop ────────────────────────────────────────
         if (node instanceof ASTNode.WhileStatement n) {
-            try {
-                while (isTruthy(eval(n.condition, env))) eval(n.body, env);
-            } catch (BreakException ignored) {}
+            outer:
+            while (isTruthy(eval(n.condition, env))) {
+                try { eval(n.body, env); }
+                catch (BreakException e)    { break outer; }
+                catch (ContinueException e) { continue outer; }
+            }
             return UNDEFINED;
         }
 
         // ── do...while loop ───────────────────────────────────
         if (node instanceof ASTNode.DoWhileStatement n) {
-            try {
-                do { eval(n.body, env); } while (isTruthy(eval(n.condition, env)));
-            } catch (BreakException ignored) {}
+            outer:
+            do {
+                try { eval(n.body, env); }
+                catch (BreakException e)    { break outer; }
+                catch (ContinueException e) { continue outer; }
+            } while (isTruthy(eval(n.condition, env)));
             return UNDEFINED;
         }
 
@@ -231,12 +255,13 @@ public class Interpreter {
         if (node instanceof ASTNode.ForStatement n) {
             Environment forEnv = new Environment(env);
             if (n.init != null) eval(n.init, forEnv);
-            try {
-                while (n.condition == null || isTruthy(eval(n.condition, forEnv))) {
-                    eval(n.body, forEnv);
-                    if (n.update != null) eval(n.update, forEnv);
-                }
-            } catch (BreakException ignored) {}
+            outer:
+            while (n.condition == null || isTruthy(eval(n.condition, forEnv))) {
+                try { eval(n.body, forEnv); }
+                catch (BreakException e)    { break outer; }
+                catch (ContinueException e) { /* fall through to update */ }
+                if (n.update != null) eval(n.update, forEnv);
+            }
             return UNDEFINED;
         }
 
@@ -264,27 +289,38 @@ public class Interpreter {
             throw new BreakException();
         }
 
+        // ── continue ──────────────────────────────────────────
+        if (node instanceof ASTNode.ContinueStatement) {
+            throw new ContinueException();
+        }
+
         // ── for...of loop ──────────────────────────────────────
         if (node instanceof ASTNode.ForOfStatement n) {
             Object iterable = eval(n.iterable, env);
             try {
                 if (iterable instanceof List<?> list) {
+                    outer:
                     for (Object item : list) {
                         Environment loopEnv = new Environment(env);
                         loopEnv.define(n.varName, item);
-                        eval(n.body, loopEnv);
+                        try { eval(n.body, loopEnv); }
+                        catch (ContinueException e) { continue outer; }
                     }
                 } else if (iterable instanceof String s) {
+                    outer:
                     for (int i = 0; i < s.length(); i++) {
                         Environment loopEnv = new Environment(env);
                         loopEnv.define(n.varName, String.valueOf(s.charAt(i)));
-                        eval(n.body, loopEnv);
+                        try { eval(n.body, loopEnv); }
+                        catch (ContinueException e) { continue outer; }
                     }
                 } else if (iterable instanceof Map<?,?> m) {
+                    outer:
                     for (Object v : ((Map<String, Object>) m).values()) {
                         Environment loopEnv = new Environment(env);
                         loopEnv.define(n.varName, v);
-                        eval(n.body, loopEnv);
+                        try { eval(n.body, loopEnv); }
+                        catch (ContinueException e) { continue outer; }
                     }
                 } else {
                     throw new RuntimeException("TypeError: value is not iterable");
@@ -298,7 +334,9 @@ public class Interpreter {
             Object obj = eval(n.object, env);
             List<String> keys = new ArrayList<>();
             if (obj instanceof Map<?,?> m) {
-                keys.addAll(((Map<String, Object>) m).keySet());
+                for (Object k : m.keySet()) {
+                    if (!"__constructor__".equals(k)) keys.add((String) k);
+                }
             } else if (obj instanceof List<?> list) {
                 for (int i = 0; i < list.size(); i++) keys.add(String.valueOf(i));
             }
@@ -322,7 +360,7 @@ public class Interpreter {
             try {
                 try {
                     eval(n.tryBlock, env);
-                } catch (ReturnException | BreakException ce) {
+                } catch (ReturnException | BreakException | ContinueException ce) {
                     throw ce;
                 } catch (RuntimeException re) {
                     if (n.catchBlock == null) throw re;
@@ -331,9 +369,14 @@ public class Interpreter {
                     if (re instanceof ThrowException te) {
                         errVal = te.value;
                     } else {
+                        // Build a proper error object with message property
                         Map<String, Object> errObj = new LinkedHashMap<>();
-                        errObj.put("name", "Error");
-                        errObj.put("message", re.getMessage() != null ? re.getMessage() : "");
+                        String msg = re.getMessage() != null ? re.getMessage() : "Unknown error";
+                        // Strip Java class prefix like "RuntimeException: "
+                        if (msg.contains(": ")) msg = msg.substring(msg.indexOf(": ") + 2);
+                        errObj.put("name",    "Error");
+                        errObj.put("message", msg);
+                        errObj.put("stack",   re.toString());
                         errVal = errObj;
                     }
 
@@ -459,6 +502,11 @@ public class Interpreter {
             Object left = eval(n.left, env);
             return isTruthy(left) ? left : eval(n.right, env);
         }
+        // Nullish coalescing ?? — return right only if left is null/undefined
+        if (n.op.equals("??")) {
+            Object left = eval(n.left, env);
+            return (left == null || left == UNDEFINED) ? eval(n.right, env) : left;
+        }
 
         Object left  = eval(n.left,  env);
         Object right = eval(n.right, env);
@@ -478,10 +526,26 @@ public class Interpreter {
             case "!==": return !jsStrictEqual(left, right);
             case "==":  return jsLooseEqual(left, right);
             case "!=":  return !jsLooseEqual(left, right);
-            case "<":   return toNumber(left) <  toNumber(right);
-            case ">":   return toNumber(left) >  toNumber(right);
-            case "<=":  return toNumber(left) <= toNumber(right);
-            case ">=":  return toNumber(left) >= toNumber(right);
+            // String-aware comparisons
+            case "<":   return (left instanceof String && right instanceof String)
+                               ? ((String)left).compareTo((String)right) < 0
+                               : toNumber(left) < toNumber(right);
+            case ">":   return (left instanceof String && right instanceof String)
+                               ? ((String)left).compareTo((String)right) > 0
+                               : toNumber(left) > toNumber(right);
+            case "<=":  return (left instanceof String && right instanceof String)
+                               ? ((String)left).compareTo((String)right) <= 0
+                               : toNumber(left) <= toNumber(right);
+            case ">=":  return (left instanceof String && right instanceof String)
+                               ? ((String)left).compareTo((String)right) >= 0
+                               : toNumber(left) >= toNumber(right);
+            // ── x instanceof Ctor ─────────────────────────────
+            case "instanceof":
+                if (!(right instanceof JSFunction)) {
+                    throw new RuntimeException("TypeError: Right-hand side of 'instanceof' is not callable");
+                }
+                if (!(left instanceof Map<?,?> m)) return false;
+                return m.get("__constructor__") == right;
             default:    throw new RuntimeException("Unknown operator: " + n.op);
         }
     }
@@ -500,6 +564,11 @@ public class Interpreter {
             List<Object> list = (value instanceof List<?> l) ? (List<Object>) l : new ArrayList<>();
             int idx = 0;
             for (ASTNode.Param el : ap.elements) {
+                if (el == null) {
+                    // Elision: a "hole" in the pattern, e.g. [, second] — skip this slot
+                    idx++;
+                    continue;
+                }
                 if (el.rest) {
                     List<Object> rest = idx < list.size()
                         ? new ArrayList<>(list.subList(idx, list.size()))
@@ -529,7 +598,9 @@ public class Interpreter {
             if (op.restName != null) {
                 Map<String, Object> rest = new LinkedHashMap<>();
                 for (Map.Entry<String, Object> e : map.entrySet()) {
-                    if (!usedKeys.contains(e.getKey())) rest.put(e.getKey(), e.getValue());
+                    if (!usedKeys.contains(e.getKey()) && !"__constructor__".equals(e.getKey())) {
+                        rest.put(e.getKey(), e.getValue());
+                    }
                 }
                 env.define(op.restName, rest);
             }
@@ -714,6 +785,7 @@ public class Interpreter {
 
         if (callee instanceof JSFunction fn) {
             Map<String, Object> instance = new LinkedHashMap<>();
+            instance.put("__constructor__", fn);
             callFunction(fn, args, instance, env);
             return instance;
         }
@@ -1007,7 +1079,8 @@ public class Interpreter {
 
     // ── Convert any JS value to a Java double ─────────────────
     public double toNumber(Object val) {
-        if (val == null || val == UNDEFINED) return Double.NaN;
+        if (val == UNDEFINED) return Double.NaN;
+        if (val == null)      return 0.0;
         if (val instanceof Double d)         return d;
         if (val instanceof Boolean b)        return b ? 1.0 : 0.0;
         if (val instanceof String s) {
@@ -1068,6 +1141,9 @@ public class Interpreter {
         if (a == null || b == null) return false;
         if (a == UNDEFINED && b == UNDEFINED) return true;
         if (a == UNDEFINED || b == UNDEFINED) return false;
+        // NaN is never equal to anything, including itself
+        if (a instanceof Double da && Double.isNaN(da)) return false;
+        if (b instanceof Double db && Double.isNaN(db)) return false;
         return a.equals(b);
     }
 
@@ -1075,6 +1151,10 @@ public class Interpreter {
     // ── JS loose equality (==) with type coercion ─────────────
     private boolean jsLooseEqual(Object a, Object b) {
         if (jsStrictEqual(a, b)) return true;
+        // null == undefined (and vice versa) is true; null/undefined
+        // are otherwise only ever equal to each other
+        if ((a == null && b == UNDEFINED) || (a == UNDEFINED && b == null)) return true;
+        if (a == null || b == null || a == UNDEFINED || b == UNDEFINED) return false;
         if (a instanceof Double  && b instanceof String)  return a.equals(toNumber(b));
         if (a instanceof String  && b instanceof Double)  return toNumber(a) == (Double) b;
         if (a instanceof Boolean) return jsLooseEqual(toNumber(a), b);

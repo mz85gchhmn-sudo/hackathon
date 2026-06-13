@@ -56,6 +56,7 @@ public class Parser {
             case RETURN           -> parseReturn();
             case SWITCH           -> parseSwitch();
             case BREAK            -> { advance(); skipSemicolon(); yield new ASTNode.BreakStatement(); }
+            case CONTINUE         -> { advance(); skipSemicolon(); yield new ASTNode.ContinueStatement(); }
             case TRY              -> parseTry();
             case THROW            -> parseThrow();
             case LBRACE           -> parseBlock();
@@ -66,14 +67,30 @@ public class Parser {
 
 
     // ── let / const / var name = expr;  or  destructuring ────
+    // also handles  let a = 1, b = 2, c;
     private ASTNode parseVarDeclaration() {
         String kind = advance().value;       // consume let/const/var
 
+        List<ASTNode.VarDeclaration> decls = new ArrayList<>();
+        decls.add(parseSingleVarDeclarator(kind));
+
+        while (check(Token.Type.COMMA)) {
+            advance();                       // consume ','
+            decls.add(parseSingleVarDeclarator(kind));
+        }
+
+        skipSemicolon();
+        return decls.size() == 1 ? decls.get(0) : new ASTNode.VarDeclarationList(decls);
+    }
+
+
+    // ── A single  name = expr  or  pattern = expr  binding ────
+    // (no semicolon / comma handling — caller manages those)
+    private ASTNode.VarDeclaration parseSingleVarDeclarator(String kind) {
         if (check(Token.Type.LBRACKET) || check(Token.Type.LBRACE)) {
             ASTNode pattern = parsePattern();
             expect(Token.Type.ASSIGN);
             ASTNode init = parseExpression();
-            skipSemicolon();
             return new ASTNode.VarDeclaration(kind, pattern, init, true);
         }
 
@@ -85,7 +102,6 @@ public class Parser {
             init = parseExpression();
         }
 
-        skipSemicolon();
         return new ASTNode.VarDeclaration(kind, name, init);
     }
 
@@ -337,12 +353,23 @@ public class Parser {
     }
 
 
+    // ── a ?? b  (nullish coalescing) ─────────────────────────
+    private ASTNode parseNullish() {
+        ASTNode left = parseAnd();
+        while (check(Token.Type.NULLISH)) {
+            advance();
+            left = new ASTNode.BinaryOp(left, "??", parseAnd());
+        }
+        return left;
+    }
+
+
     // ── a || b ────────────────────────────────────────────────
     private ASTNode parseOr() {
-        ASTNode left = parseAnd();
+        ASTNode left = parseNullish();
         while (check(Token.Type.OR)) {
             String op = advance().value;
-            left = new ASTNode.BinaryOp(left, op, parseAnd());
+            left = new ASTNode.BinaryOp(left, op, parseNullish());
         }
         return left;
     }
@@ -371,11 +398,12 @@ public class Parser {
     }
 
 
-    // ── a < b  /  a > b  /  a <= b  /  a >= b ───────────────
+    // ── a < b  /  a > b  /  a <= b  /  a >= b  /  a instanceof b ─
     private ASTNode parseComparison() {
         ASTNode left = parseAddSub();
         while (check(Token.Type.LT) || check(Token.Type.GT) ||
-               check(Token.Type.LT_EQ) || check(Token.Type.GT_EQ)) {
+               check(Token.Type.LT_EQ) || check(Token.Type.GT_EQ) ||
+               check(Token.Type.INSTANCEOF)) {
             String op = advance().value;
             left = new ASTNode.BinaryOp(left, op, parseAddSub());
         }
@@ -410,6 +438,7 @@ public class Parser {
     private ASTNode parseUnary() {
         if (check(Token.Type.NOT))   { String op = advance().value; return new ASTNode.UnaryOp(op, parseUnary()); }
         if (check(Token.Type.MINUS)) { String op = advance().value; return new ASTNode.UnaryOp(op, parseUnary()); }
+        if (check(Token.Type.PLUS))  { String op = advance().value; return new ASTNode.UnaryOp(op, parseUnary()); }
         if (check(Token.Type.TYPEOF)){ advance(); return new ASTNode.UnaryOp("typeof", parseUnary()); }
 
         // Prefix increment/decrement
@@ -463,6 +492,34 @@ public class Parser {
             } else if (check(Token.Type.LPAREN)) {
                 List<ASTNode> args = parseArgList();
                 expr = new ASTNode.CallExpression(expr, args);
+
+            } else {
+                break;
+            }
+        }
+
+        return expr;
+    }
+
+
+    // ── Parse a member-access chain WITHOUT consuming call args ─
+    // Used for `new Foo.Bar(args)` — only `.prop` / `[expr]` are
+    // part of the constructor name; the trailing `(args)` belongs
+    // to the NewExpression itself, not a nested CallExpression.
+    private ASTNode parseMemberOnly() {
+        ASTNode expr = parsePrimary();
+
+        while (true) {
+            if (check(Token.Type.DOT)) {
+                advance();
+                String prop = expect(Token.Type.IDENTIFIER).value;
+                expr = new ASTNode.MemberExpression(expr, prop, null);
+
+            } else if (check(Token.Type.LBRACKET)) {
+                advance();
+                ASTNode computed = parseExpression();
+                expect(Token.Type.RBRACKET);
+                expr = new ASTNode.MemberExpression(expr, null, computed);
 
             } else {
                 break;
@@ -529,10 +586,10 @@ public class Parser {
             return new ASTNode.FunctionExpression(params, body, false);
         }
 
-        // new Foo(args)
+        // new Foo(args)  or  new Foo.Bar(args)  (member access only, no calls)
         if (t.type == Token.Type.NEW) {
             advance();
-            ASTNode callee = parseCallOrMember();
+            ASTNode callee = parseMemberOnly();
             List<ASTNode> args = check(Token.Type.LPAREN) ? parseArgList() : new ArrayList<>();
             return new ASTNode.NewExpression(callee, args);
         }
@@ -649,13 +706,25 @@ public class Parser {
         Map<String, ASTNode> props = new LinkedHashMap<>();
         while (!check(Token.Type.RBRACE) && !check(Token.Type.EOF)) {
             String key;
+            boolean isIdentifierKey = check(Token.Type.IDENTIFIER);
             if (check(Token.Type.STRING))     key = advance().value;
             else if (check(Token.Type.NUMBER)) key = advance().value;
             else key = expect(Token.Type.IDENTIFIER).value;
 
-            expect(Token.Type.COLON);
-            ASTNode value = parseExpression();
-            props.put(key, value);
+            if (isIdentifierKey && check(Token.Type.LPAREN)) {
+                // Method shorthand:  { greet() { ... } }
+                List<ASTNode.Param> params = parseParamList();
+                ASTNode.Block body = parseBlock();
+                props.put(key, new ASTNode.FunctionExpression(params, body, false));
+            } else if (isIdentifierKey && (check(Token.Type.COMMA) || check(Token.Type.RBRACE))) {
+                // Property shorthand:  { myX, myY }  →  { myX: myX, myY: myY }
+                props.put(key, new ASTNode.Identifier(key));
+            } else {
+                expect(Token.Type.COLON);
+                ASTNode value = parseExpression();
+                props.put(key, value);
+            }
+
             if (!check(Token.Type.RBRACE)) expect(Token.Type.COMMA);
         }
         expect(Token.Type.RBRACE);
@@ -701,7 +770,10 @@ public class Parser {
         expect(Token.Type.LBRACKET);
         List<ASTNode.Param> elements = new ArrayList<>();
         while (!check(Token.Type.RBRACKET) && !check(Token.Type.EOF)) {
-            if (check(Token.Type.SPREAD)) {
+            if (check(Token.Type.COMMA)) {
+                // Elision: a "hole" in the pattern, e.g. [, second]
+                elements.add(null);
+            } else if (check(Token.Type.SPREAD)) {
                 advance();
                 elements.add(new ASTNode.Param(parsePattern(), null, true));
             } else {
